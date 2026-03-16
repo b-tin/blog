@@ -12,7 +12,7 @@ toc_max_heading_level: 4
 #### Python
 
 ```jsx
-FROM python:3.9.18-bookworm
+FROM python:3.12-bookworm
 
 ENV USER_NON_ROOT btin
 
@@ -43,138 +43,394 @@ CMD /app/entrypoint.sh
 
 #### NodeJS
 
-## 1.2 Docker Compose
+```jsx
+FROM node:20-bookworm-slim
 
-#### Airflow
+ENV USER_NON_ROOT btin
 
+# Create non-root user
+RUN groupadd --gid 1001 $USER_NON_ROOT \
+    && adduser --shell /bin/sh --uid 1001 --gid 1001 $USER_NON_ROOT \
+    && mkdir -p /app \
+    && chown -R $USER_NON_ROOT:$USER_NON_ROOT /app
 
-#### MongoDB
+WORKDIR /app
 
-```yaml
-version: '3.8'
+COPY --chown=$USER_NON_ROOT:$USER_NON_ROOT package*.json ./
+RUN npm ci --only=production
 
-services:
-  mongodb:
-    image: mongo:7.0.3
-    container_name: btin-mongodb
-    ports:
-      - 27017:27017
-    environment:
-      - MONGO_INITDB_DATABASE=btin-mongodb
-      - MONGO_INITDB_ROOT_USERNAME=badmin
-      - MONGO_INITDB_ROOT_PASSWORD=bpassword
-    volumes:
-      - ./mongo-entrypoint:/docker-entrypoint-initdb.d
-      - mongodb:/data/db
-      - mongoconfig:/data/configdb
-    networks:
-      - mongo_net
+COPY --chown=$USER_NON_ROOT:$USER_NON_ROOT . .
 
-  mongo-express:
-    image: mongo-express:latest
-    restart: always
-    ports:
-      - "8081:8081"
-    environment:
-      - ME_CONFIG_MONGODB_ADMINUSERNAME=badmin
-      - ME_CONFIG_MONGODB_ADMINPASSWORD=bpassword
-      - ME_CONFIG_MONGODB_SERVER=mongodb
-    networks:
-      - mongo_net
+USER $USER_NON_ROOT
 
-volumes:
-  mongodb:
-  mongoconfig:
+# Non-root user can not run with port < 1024
+EXPOSE 8080
 
-networks:
-  mongo_net:
-    driver: bridge
+CMD ["node", "server.js"]
 ```
 
-#### MySQL
+## 1.2 Docker Compose
+
+Port convention: external ports follow the `2xxxx` scheme — prefix `2` prepended to the service's standard port (e.g. MySQL `3306` → `23306`).
+
+#### MySQL + phpMyAdmin
+
+- **MySQL:** `localhost:23306`
+- **phpMyAdmin:** `http://localhost:28080`
 
 ```yaml
-version: '3.8'
-
 services:
-  mysqldb:
-    image: mysql:5.7
-    restart: always
-    command: --max_allowed_packet=1072731894
-    environment:
-      - MYSQL_DATABASE=btest
-      - MYSQL_ROOT_PASSWORD=bpassword
+  b-mysql:
+    image: mysql:8.0
+    container_name: b-mysql
+    restart: unless-stopped
     ports:
-      - 30306:3306
+      - "23306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: "bpassword"
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_DATABASE: "btest"
+      MYSQL_USER: "buser"
+      MYSQL_PASSWORD: "bpassword"
     volumes:
-      - mysqldb:/var/lib/mysql
+      - b-mysql:/var/lib/mysql
     networks:
-      - mysql_net
+      - b-mysql-net
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -pbpassword --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  b-phpmyadmin:
+    image: phpmyadmin/phpmyadmin:latest
+    container_name: b-phpmyadmin
+    restart: unless-stopped
+    depends_on:
+      b-mysql:
+        condition: service_healthy
+    environment:
+      PMA_HOST: "b-mysql"
+      PMA_PORT: 3306
+      PMA_ARBITRARY: 0
+      UPLOAD_LIMIT: 1024M
+      PMA_USER: "buser"
+      PMA_PASSWORD: "bpassword"
+    ports:
+      - "28080:80"
+    networks:
+      - b-mysql-net
 
 volumes:
-  mysqldb:
+  b-mysql:
+    driver: local
 
 networks:
-  mysql_net:
+  b-mysql-net:
     driver: bridge
 ```
 
 #### PostgreSQL
 
+- **PostgreSQL:** `localhost:25432`
+
 ```yaml
-version: '3.8'
-
 services:
-  postgresdb:
-    image: postgres:12.11
+  b-postgres:
+    image: postgres:15.7
+    container_name: b-postgres
+    restart: unless-stopped
     ports:
-    - 5432:5432
+      - "25432:5432"
     env_file:
-      - database.env
+      - .env
+    command:
+      - postgres
+      - -c
+      - max_connections=400
+      - -c
+      - shared_buffers=512MB
     volumes:
-      - postgresdb:/var/lib/postgresql/data/
+      - b-postgres:/var/lib/postgresql/data
     networks:
-      - postgres_net
-
-  phppgadmin:
-    image: dockage/phppgadmin:latest
-    ports:
-    - "38080:80"
-    - "30443:443"
-    environment:
-    - PHP_PG_ADMIN_SERVER_DESC=PostgreSQL
-    - PHP_PG_ADMIN_SERVER_HOST=postgresdb
-    - PHP_PG_ADMIN_SERVER_PORT=5432
-    - PHP_PG_ADMIN_SERVER_SSL_MODE=allow
-    - PHP_PG_ADMIN_SERVER_DEFAULT_DB=template1
-    - PHP_PG_ADMIN_SERVER_PG_DUMP_PATH=/usr/bin/pg_dump
-    - PHP_PG_ADMIN_SERVER_PG_DUMPALL_PATH=/usr/bin/pg_dumpall
-    - PHP_PG_ADMIN_DEFAULT_LANG=auto
-    - PHP_PG_ADMIN_AUTO_COMPLETE=default on
-    - PHP_PG_ADMIN_EXTRA_LOGIN_SECURITY=false
-    - PHP_PG_ADMIN_OWNED_ONLY=false
-    - PHP_PG_ADMIN_SHOW_COMMENTS=true
-    - PHP_PG_ADMIN_SHOW_ADVANCED=false
-    - PHP_PG_ADMIN_SHOW_SYSTEM=false
-    - PHP_PG_ADMIN_MIN_PASSWORD_LENGTH=1
-    - PHP_PG_ADMIN_LEFT_WIDTH=200
-    - PHP_PG_ADMIN_THEME=default
-    - PHP_PG_ADMIN_SHOW_OIDS=false
-    - PHP_PG_ADMIN_MAX_ROWS=30
-    - PHP_PG_ADMIN_MAX_CHARS=50
-    - PHP_PG_ADMIN_USE_XHTML_STRICT=false
-    - PHP_PG_ADMIN_HELP_BASE=http://www.postgresql.org/docs/%s/interactive/
-    - PHP_PG_ADMIN_AJAX_REFRESH=3
-    networks:
-      - postgres_net
+      - b-postgres-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U buser -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
 volumes:
-  postgresdb:
+  b-postgres:
+    driver: local
 
 networks:
- postgres_net:
+  b-postgres-net:
+    driver: bridge
+```
+
+`.env`:
+
+```
+POSTGRES_USER=buser
+POSTGRES_PASSWORD=bpassword
+POSTGRES_DB=btest
+```
+
+#### MongoDB + Mongo Express
+
+- **MongoDB:** `localhost:27017`
+- **Mongo Express:** `http://localhost:28083`
+
+```yaml
+services:
+  b-mongodb:
+    image: mongo:7.0
+    container_name: b-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: btest
+      MONGO_INITDB_ROOT_USERNAME: buser
+      MONGO_INITDB_ROOT_PASSWORD: bpassword
+    volumes:
+      - b-mongodb:/data/db
+      - b-mongoconfig:/data/configdb
+    networks:
+      - b-mongodb-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  b-mongo-express:
+    image: mongo-express:latest
+    container_name: b-mongo-express
+    restart: unless-stopped
+    depends_on:
+      b-mongodb:
+        condition: service_healthy
+    ports:
+      - "28083:8081"
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: buser
+      ME_CONFIG_MONGODB_ADMINPASSWORD: bpassword
+      ME_CONFIG_MONGODB_SERVER: b-mongodb
+    networks:
+      - b-mongodb-net
+
+volumes:
+  b-mongodb:
+    driver: local
+  b-mongoconfig:
+    driver: local
+
+networks:
+  b-mongodb-net:
     driver: bridge
 ```
 
 #### Redis
-#### Superset
+
+- **Redis:** `localhost:26379`
+
+```yaml
+services:
+  b-redis:
+    image: redis:8.6.1
+    container_name: b-redis
+    restart: unless-stopped
+    ports:
+      - "26379:6379"
+    volumes:
+      - b-redis:/data
+    networks:
+      - b-redis-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  b-redis:
+    driver: local
+
+networks:
+  b-redis-net:
+    driver: bridge
+```
+
+#### RabbitMQ
+
+- **AMQP:** `localhost:25672`
+- **Management UI:** `http://localhost:25673` — login `buser` / `bpassword`
+
+```yaml
+services:
+  b-rabbitmq:
+    image: rabbitmq:4-management
+    container_name: b-rabbitmq
+    restart: always
+    ports:
+      - "25672:5672"
+      - "25673:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: buser
+      RABBITMQ_DEFAULT_PASS: bpassword
+    configs:
+      - source: rabbitmq-plugins
+        target: /etc/rabbitmq/enabled_plugins
+    volumes:
+      - b-rabbitmq-lib:/var/lib/rabbitmq
+      - b-rabbitmq-log:/var/log/rabbitmq
+    networks:
+      - b-rabbitmq-net
+
+configs:
+  rabbitmq-plugins:
+    content: "[rabbitmq_management]."
+
+volumes:
+  b-rabbitmq-lib:
+  b-rabbitmq-log:
+
+networks:
+  b-rabbitmq-net:
+    driver: bridge
+```
+
+#### Wallabag
+
+Self-hosted read-it-later service. Requires MariaDB + Redis.
+
+- **Wallabag:** `http://localhost:28082` — login `wallabag` / `wallabag`
+
+:::note First-time setup
+After `docker compose up -d`, wait for the app to be ready then run the schema migration manually:
+```bash
+docker exec -it b-wallabag php bin/console wallabag:install --env=prod --no-interaction
+```
+`POPULATE_DATABASE=true` does not reliably create the schema on first boot — the manual step is required.
+:::
+
+```yaml
+services:
+  b-wallabag:
+    image: wallabag/wallabag:2.6.14
+    container_name: b-wallabag
+    restart: unless-stopped
+    depends_on:
+      b-wallabag-db:
+        condition: service_healthy
+      b-wallabag-redis:
+        condition: service_healthy
+    ports:
+      - "28082:80"
+    env_file:
+      - ./.env
+    volumes:
+      - b-wallabag-images:/var/www/wallabag/web/assets/images
+      - b-wallabag-data:/var/www/wallabag/data
+    networks:
+      - b-wallabag-net
+
+  b-wallabag-db:
+    image: mariadb:11
+    container_name: b-wallabag-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: bpassword
+      MYSQL_DATABASE: wallabag
+      MYSQL_USER: buser
+      MYSQL_PASSWORD: bpassword
+    volumes:
+      - b-wallabag-db:/var/lib/mysql
+    networks:
+      - b-wallabag-net
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -uroot -pbpassword --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  b-wallabag-redis:
+    image: redis:alpine
+    container_name: b-wallabag-redis
+    restart: unless-stopped
+    networks:
+      - b-wallabag-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  b-wallabag-images:
+  b-wallabag-data:
+  b-wallabag-db:
+
+networks:
+  b-wallabag-net:
+    driver: bridge
+```
+
+`.env` — the Docker Hub image requires `SYMFONY__ENV__*` prefixed variables (not the plain names in the source repo's `env.example`):
+
+```
+POPULATE_DATABASE=true
+SYMFONY__ENV__DATABASE_DRIVER=pdo_mysql
+SYMFONY__ENV__DATABASE_HOST=b-wallabag-db
+SYMFONY__ENV__DATABASE_PORT=3306
+SYMFONY__ENV__DATABASE_NAME=wallabag
+SYMFONY__ENV__DATABASE_USER=buser
+SYMFONY__ENV__DATABASE_PASSWORD=bpassword
+SYMFONY__ENV__DATABASE_CHARSET=utf8mb4
+SYMFONY__ENV__DOMAIN_NAME=http://localhost:28082
+SYMFONY__ENV__SECRET=ch4n63m31fy0uc4n
+SYMFONY__ENV__REDIS_HOST=b-wallabag-redis
+SYMFONY__ENV__REDIS_PORT=6379
+SYMFONY__ENV__FOSUSER_REGISTRATION=false
+```
+
+#### Linkding
+
+Self-hosted bookmark manager. Single-service stack using SQLite — no separate database needed.
+
+- **Linkding:** `http://localhost:29090` — login `buser` / `bpassword` (auto-created on first boot via env vars)
+
+```yaml
+services:
+  b-linkding:
+    image: sissbruecker/linkding:1.45.0
+    container_name: b-linkding
+    restart: unless-stopped
+    ports:
+      - "29090:9090"
+    env_file:
+      - ./.env
+    volumes:
+      - b-linkding-data:/etc/linkding/data
+    networks:
+      - b-linkding-net
+
+volumes:
+  b-linkding-data:
+    driver: local
+
+networks:
+  b-linkding-net:
+    driver: bridge
+```
+
+`.env`:
+
+```
+LD_SUPERUSER_NAME=buser
+LD_SUPERUSER_PASSWORD=bpassword
+LD_DISABLE_BACKGROUND_TASKS=False
+LD_DISABLE_URL_VALIDATION=False
+```
